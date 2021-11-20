@@ -42,9 +42,9 @@ release:
 	      -DMUSESCORE_BUILD_CONFIG="${MUSESCORE_BUILD_CONFIG}" \
 	      -DMUSESCORE_REVISION="${MUSESCORE_REVISION}" \
 	      -DTELEMETRY_TRACK_ID="${TELEMETRY_TRACK_ID}" \
-	      .. -G Xcode; \
-	xcodebuild -project ${XCODEPROJ} -target lrelease; \
-	$(FORMATTER_START) xcodebuild -project ${XCODEPROJ} -configuration Release -target ALL_BUILD $(FORMATTER_END); \
+	      .. -G Xcode -T buildsystem=1; \
+	xcodebuild -project ${XCODEPROJ} -target lrelease -UseNewBuildSystem=NO -UseModernBuildSystem=NO; \
+	$(FORMATTER_START) xcodebuild -project ${XCODEPROJ} -configuration Release -target ALL_BUILD $(FORMATTER_END) -UseNewBuildSystem=NO -UseModernBuildSystem=NO; \
 
 debug:
 	mkdir build.debug; \
@@ -52,17 +52,17 @@ debug:
       cmake -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
             -DCMAKE_BUILD_TYPE=DEBUG \
             -DCMAKE_BUILD_NUMBER="${BUILD_NUMBER}" \
-            .. -G Xcode; 			       \
-      xcodebuild -project ${XCODEPROJ} -target lrelease; \
-      $(FORMATTER_START) xcodebuild -project ${XCODEPROJ} -configuration Debug -target ALL_BUILD $(FORMATTER_END); \
+            .. -G Xcode -T buildsystem=1; 			       \
+      xcodebuild -project ${XCODEPROJ} -target lrelease -UseNewBuildSystem=NO -UseModernBuildSystem=NO; \
+      $(FORMATTER_START) xcodebuild -project ${XCODEPROJ} -configuration Debug -target ALL_BUILD $(FORMATTER_END) -UseNewBuildSystem=NO -UseModernBuildSystem=NO; \
 
 xcode:
 	mkdir build.xcode;              \
     cd build.xcode;                                  \
     cmake -DCMAKE_INSTALL_PREFIX=../build.xcode/main/Debug -DCMAKE_BUILD_TYPE=DEBUG \
           -DCMAKE_BUILD_NUMBER="${BUILD_NUMBER}"  \
-          .. -G Xcode;                         \
-    xcodebuild -project ${XCODEPROJ} -target lrelease;
+          .. -G Xcode -T buildsystem=1;                         \
+    xcodebuild -project ${XCODEPROJ} -target lrelease -UseNewBuildSystem=NO -UseModernBuildSystem=NO;
 
 lupdate:
 	cd build.release; xcodebuild -project ${XCODEPROJ} -target lupdate;
@@ -97,7 +97,7 @@ ci:
 	      -DMUSESCORE_BUILD_CONFIG="${MUSESCORE_BUILD_CONFIG}" \
 	      -DMUSESCORE_REVISION="${MUSESCORE_REVISION}" \
 	      -DTELEMETRY_TRACK_ID="${TELEMETRY_TRACK_ID}" \
-	      .. -G Xcode; \
+	      .. -G Xcode -T buildsystem=1; \
 	xcodebuild -project ${XCODEPROJ} -target lrelease; \
 	$(FORMATTER_START) xcodebuild -project ${XCODEPROJ} -configuration Release -target install $(FORMATTER_END);  
 
