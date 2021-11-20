@@ -177,7 +177,7 @@ option(BUILD_AUTOUPDATE "Build with autoupdate support" OFF)
 option(BUILD_CRASH_REPORTER "Build with crash reporter" OFF)
 option(BUILD_PORTABLEAPPS "Windows build for PortableApps.com" OFF)
 set(CRASH_REPORT_URL "http://127.0.0.1:1127/post" CACHE STRING "URL where to send crash reports (valid if BUILD_CRASH_REPORTER is set to ON)")
-option(BUILD_TELEMETRY_MODULE "Build with telemetry module" ON)
+option(BUILD_TELEMETRY_MODULE "Build with telemetry module" OFF)
 set(TELEMETRY_TRACK_ID "" CACHE STRING "Telemetry track id")
 option(PACKAGE_FILE_ASSOCIATION "File types association" OFF)
 
@@ -349,7 +349,7 @@ endif (MINGW OR MSVC OR APPLE)
 
 # Download MuseScore SoundFont
 if (DOWNLOAD_SOUNDFONT)
-  set (SF_VERSION_REMOTE_FILE ${PROJECT_BINARY_DIR}/VERSION)
+  set (SF_VERSION_REMOTE_FILE ${PROJECT_BINARY_DIR}/SF_VERSION)
   set (SF_VERSION_LOCAL_FILE ${PROJECT_SOURCE_DIR}/share/sound/VERSION)
   set (DOWNLOAD_URL_ROOT "https://ftp.osuosl.org/pub/musescore/soundfont/MuseScore_General")
   set (SOUND_DIRECTORY ${PROJECT_SOURCE_DIR}/share/sound)
