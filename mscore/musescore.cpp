@@ -456,6 +456,7 @@ void updateExternalValuesFromPreferences() {
             dir.mkpath(preferences.getString(PREF_APP_PATHS_MYTEMPLATES));
             dir.mkpath(preferences.getString(PREF_APP_PATHS_MYEXTENSIONS));
             dir.mkpath(preferences.getString(PREF_APP_PATHS_MYPLUGINS));
+            dir.mkpath(preferences.getString(PREF_APP_PATHS_MYDATASETS));
             foreach (QString path, preferences.getString(PREF_APP_PATHS_MYSOUNDFONTS).split(";"))
                   dir.mkpath(path);
                   }
@@ -1053,7 +1054,10 @@ MuseScore::MuseScore()
       _tourHandler->loadTours();
 
       setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
-
+      
+      datasetThreadPool = new QThreadPool();
+      datasetThreadPool->setMaxThreadCount(500);
+          
       QScreen* screen = QGuiApplication::primaryScreen();
       if (userDPI == 0.0) {
 #if defined(Q_OS_WIN)
@@ -1966,6 +1970,7 @@ MuseScore::MuseScore()
       if (seq) {
             connect(seq, SIGNAL(started()), SLOT(seqStarted()));
             connect(seq, SIGNAL(stopped()), SLOT(seqStopped()));
+            connect(seq, SIGNAL(cursorMovedOnNoteEvent(int, bool)), SLOT(seqCursorMovedOnNoteEvent(int, bool)));
             }
       loadScoreList();
 
@@ -8161,6 +8166,7 @@ void MuseScore::init(QStringList& argv)
                   preferences.setToDefaultValue(PREF_APP_PATHS_MYSTYLES);
                   preferences.setToDefaultValue(PREF_APP_PATHS_MYIMAGES);
                   preferences.setToDefaultValue(PREF_APP_PATHS_MYTEMPLATES);
+                  preferences.setToDefaultValue(PREF_APP_PATHS_MYDATASETS);
                   preferences.setToDefaultValue(PREF_APP_PATHS_MYPLUGINS);
                   preferences.setToDefaultValue(PREF_APP_PATHS_MYSOUNDFONTS);
                   preferences.setToDefaultValue(PREF_APP_PATHS_MYEXTENSIONS);

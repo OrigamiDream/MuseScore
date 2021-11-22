@@ -338,40 +338,41 @@ bool Seq::canStart()
 //    called from gui thread
 //---------------------------------------------------------
 
-void Seq::start()
-      {
-      if (!_driver) {
-            qDebug("No driver!");
-            return;
+void Seq::start() {
+    if (!_driver) {
+        qDebug("No driver!");
+        return;
+    }
+    previousPage = nullptr;
+    openNoteEventStream();
+
+    mscore->moveControlCursor();
+
+    allowBackgroundRendering = true;
+    collectEvents(getPlayStartUtick());
+    if (cs->playMode() == PlayMode::AUDIO) {
+        if (!oggInit) {
+            vorbisData.pos  = 0;
+            vorbisData.data = cs->audio()->data();
+            int n = ov_open_callbacks(&vorbisData, &vf, 0, 0, ovCallbacks);
+            if (n < 0) {
+                qDebug("ogg open failed: %d", n);
             }
+            oggInit = true;
+        }
+    }
 
-      mscore->moveControlCursor();
+    if (!preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) || (preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) && state == Transport::STOP))
+        seek(getPlayStartUtick());
 
-      allowBackgroundRendering = true;
-      collectEvents(getPlayStartUtick());
-      if (cs->playMode() == PlayMode::AUDIO) {
-            if (!oggInit) {
-                  vorbisData.pos  = 0;
-                  vorbisData.data = cs->audio()->data();
-                  int n = ov_open_callbacks(&vorbisData, &vf, 0, 0, ovCallbacks);
-                  if (n < 0) {
-                        qDebug("ogg open failed: %d", n);
-                        }
-                  oggInit = true;
-                  }
-            }
-
-      if (!preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) || (preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) && state == Transport::STOP))
-            seek(getPlayStartUtick());
-
-      if (preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) && mscore->countIn() && state == Transport::STOP) {
-            // Ready to start playing count in, switching to fake transport
-            // to prevent playing in other applications with our ticks simultaneously
-            useJackTransportSavedFlag    = true;
-            preferences.setPreference(PREF_IO_JACK_USEJACKTRANSPORT, false);
-            }
-      startTransport();
-      }
+    if (preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) && mscore->countIn() && state == Transport::STOP) {
+        // Ready to start playing count in, switching to fake transport
+        // to prevent playing in other applications with our ticks simultaneously
+        useJackTransportSavedFlag    = true;
+        preferences.setPreference(PREF_IO_JACK_USEJACKTRANSPORT, false);
+    }
+    startTransport();
+}
 
 //---------------------------------------------------------
 //   stop
@@ -403,6 +404,176 @@ void Seq::stop()
             cs->update();
             }
       }
+
+#define NOTE_LENGTH 128
+
+void Seq::writeNoteEventStream(int currentTick, const QVector<NPlayEvent>& recordedEvents) {
+    bool changedNotes[NOTE_LENGTH];
+    uint16_t velocities[NOTE_LENGTH];
+    int nextPage = 0;
+    qreal offsetXRatio;
+    qreal offsetYRatio;
+    bool newPage = false;
+    
+    memset(changedNotes, false, sizeof(changedNotes));
+    memset(velocities, 0, sizeof(velocities));
+    
+    for(const NPlayEvent& event : recordedEvents) {
+        int key = event.pitch();
+        int velocity = event.velo();
+        
+        changedNotes[key] = true;
+        velocities[key] = velocity;
+    }
+    
+    QRectF cursorRect = cv->cursorRect();
+    Page* currentPage = cv->currentPage();
+    QRect pageRect = cv->pageMatrixRect(currentPage);
+    
+    qreal cursorRelativeX = cursorRect.x() - pageRect.x();
+    qreal cursorRelativeY = cursorRect.y() - pageRect.y();
+    qreal offsetX;
+    qreal offsetY;
+    
+    if(previousPage) {
+        if(previousPage->no() != currentPage->no()) {
+            nextPage = currentPage->no() - previousPage->no();
+            newPage = true;
+            qDebug("transiting to new page.");
+        } else {
+            QPointF previous = previousCursorRect.center(); // the cursor rect is origin from the page left-upper corner.
+            QPointF current = QPointF(cursorRelativeX + (cursorRect.width() / 2), cursorRelativeY + (cursorRect.height() / 2));
+            
+            offsetX = current.x() - previous.x();
+            offsetY = current.y() - previous.y();
+        }
+    } else {
+        newPage = true;
+    }
+    if(newPage) {
+        // get offsets from page's origin x, y
+        offsetX = cursorRect.x() - pageRect.x();
+        offsetY = cursorRect.y() - pageRect.y();
+    }
+    offsetXRatio = offsetX / pageRect.width();
+    offsetYRatio = offsetY / pageRect.height();
+    if(offsetY < 0) {
+        qDebug("offset_y_ratio is negative. currentTick=%d, offsetX=%f, offsetY=%f, offsetXRatio=%f, offsetYRatio=%f", currentTick, offsetX, offsetY, offsetXRatio, offsetYRatio);
+    }
+    
+    previousPage = currentPage;
+    previousCursorRect = QRectF(cursorRelativeX, cursorRelativeY, cursorRect.width(), cursorRect.height());
+    
+    noteEventMutex.lock();
+    if(noteEventsFileStream) {
+        QList<QString> values;
+        values.append(QString::number(currentTick)); // currentTick
+        values.append(QString::number(offsetXRatio)); // offset_x_ratio
+        values.append(QString::number(offsetYRatio)); // offset_y_rati
+        values.append(QString::number(nextPage)); // transit_page
+        values.append("false"); // end_of_measure
+        
+        size_t len = NOTE_LENGTH * 2;
+        size_t i;
+        for(i = 0; i < len; ++i) {
+            if(i % 2 == 0) {
+                // changed note
+                bool changed = changedNotes[i / 2];
+                values.append(changed ? "true" : "false");
+            } else {
+                // velocities
+                uint16_t velocity = velocities[i / 2];
+                values.append(QString::number(velocity));
+            }
+        }
+        (*noteEventsFileStream) << QStringList(values).join(",") << Qt::endl;
+        noteEventsFileStream->flush();
+    }
+    noteEventMutex.unlock();
+}
+
+void Seq::openNoteEventStream() {
+    closeNoteEventStream();
+    QString title = cv->score()->title();
+    QString eventFilePath = preferences.getString(PREF_APP_PATHS_MYDATASETS) + QString("/") + title + QString("/notes.csv");
+    
+    emit cursorMovedOnNoteEvent(0, true);
+    
+    noteEventMutex.lock();
+    noteEventsFile = new QFile(eventFilePath);
+    if(noteEventsFile->open(QIODevice::WriteOnly | QIODevice::Text)) {
+        noteEventsFileStream = new QTextStream(noteEventsFile);
+        QList<QString> labels;
+        labels.append("current_tick"); // int
+        labels.append("offset_x_ratio"); // float
+        labels.append("offset_y_ratio"); // float
+        labels.append("transit_page"); // int
+        labels.append("end_of_measure"); // bool
+        
+        QList<QString> values;
+        values.append(QString::number(0));
+        values.append(QString::number(0.0f));
+        values.append(QString::number(0.0f));
+        values.append(QString::number(0));
+        values.append("false");
+        
+        (*noteEventsFileStream) << QStringList(labels).join(",");
+        
+        size_t len = NOTE_LENGTH * 2;
+        uint16_t i;
+        for(i = 0; i < len; ++i) {
+            (*noteEventsFileStream) << ",";
+            if(i % 2 == 0) {
+                (*noteEventsFileStream) << QString("changed-") << QString::number(i / 2);
+                values.append("false");
+            } else {
+                (*noteEventsFileStream) << QString("velocity-") << QString::number(i / 2);
+                values.append("0");
+            }
+        }
+        (*noteEventsFileStream) << Qt::endl;
+        (*noteEventsFileStream) << QStringList(values).join(",") << Qt::endl;
+        noteEventsFileStream->flush();
+    } else {
+        qDebug("notes text stream open failed: %s", eventFilePath.toStdString().c_str());
+    }
+    noteEventMutex.unlock();
+}
+
+void Seq::closeNoteEventStream(bool endOfMeasure) {
+    noteEventMutex.lock();
+    if(endOfMeasure) {
+        int currentTick = getCurTick();
+        QList<QString> values;
+        values.append(QString::number(currentTick));
+        values.append(QString::number(0.0f));
+        values.append(QString::number(0.0f));
+        values.append(QString::number(0));
+        values.append("true");
+        
+        size_t len = NOTE_LENGTH * 2;
+        uint16_t i;
+        for(i = 0; i < len; ++i) {
+            if(i % 2 == 0) {
+                values.append("false");
+            } else {
+                values.append("0");
+            }
+        }
+        (*noteEventsFileStream) << QStringList(values).join(",") << Qt::endl;
+    }
+    if(noteEventsFile) {
+        if(noteEventsFile->isOpen()) {
+            noteEventsFile->close();
+        }
+        delete noteEventsFile;
+        delete noteEventsFileStream;
+        
+        noteEventsFile = nullptr;
+        noteEventsFileStream = nullptr;
+    }
+    noteEventMutex.unlock();
+}
 
 //---------------------------------------------------------
 //   stopWait
@@ -711,282 +882,309 @@ void Seq::addCountInClicks()
 //    methods like semaphores can also not be used.
 //-------------------------------------------------------------------
 
-void Seq::process(unsigned framesPerPeriod, float* buffer)
-      {
-      unsigned framesRemain = framesPerPeriod; // the number of frames remaining to be processed by this call to Seq::process
-      Transport driverState = _driver->getState();
-      // Checking for the reposition from JACK Transport
-      _driver->checkTransportSeek(playFrame, framesRemain, inCountIn);
+void Seq::process(unsigned framesPerPeriod, float* buffer) {
+    unsigned framesRemain = framesPerPeriod; // the number of frames remaining to be processed by this call to Seq::process
+    Transport driverState = _driver->getState();
+    // Checking for the reposition from JACK Transport
+    _driver->checkTransportSeek(playFrame, framesRemain, inCountIn);
 
-      if (driverState != state) {
-            // Got a message from JACK Transport panel: Play
-            if (state == Transport::STOP && driverState == Transport::PLAY) {
-                  if ((cachedPrefs.useJackMidi || cachedPrefs.useJackAudio) && !getAction("play")->isChecked()) {
-                        // Do not play while editing elements
-                        if (mscore->state() != STATE_NORMAL || !isRunning() || !canStart())
-                              return;
-                        getAction("play")->setChecked(true);
-                        getAction("play")->triggered(true);
+    if (driverState != state) {
+        // Got a message from JACK Transport panel: Play
+        if (state == Transport::STOP && driverState == Transport::PLAY) {
+            if ((cachedPrefs.useJackMidi || cachedPrefs.useJackAudio) && !getAction("play")->isChecked()) {
+                // Do not play while editing elements
+                if (mscore->state() != STATE_NORMAL || !isRunning() || !canStart())
+                    return;
+                getAction("play")->setChecked(true);
+                getAction("play")->triggered(true);
 
-                        // If we just launch MuseScore and press "Play" on JACK Transport with time 0:00
-                        // MuseScore doesn't seek to 0 and guiPos is uninitialized, so let's make it manually
-                        if (cachedPrefs.useJackTransport && getCurTick() == 0)
-                              seekRT(0);
+                // If we just launch MuseScore and press "Play" on JACK Transport with time 0:00
+                // MuseScore doesn't seek to 0 and guiPos is uninitialized, so let's make it manually
+                if (cachedPrefs.useJackTransport && getCurTick() == 0)
+                    seekRT(0);
 
-                        // Switching to fake transport while playing count in
-                        // to prevent playing in other applications with our ticks simultaneously
-                        if (cachedPrefs.useJackTransport && mscore->countIn()) {
-                              // Stopping real JACK Transport
-                              stopTransport();
-                              // Starting fake transport
-                              useJackTransportSavedFlag = preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT);
-                              preferences.setPreference(PREF_IO_JACK_USEJACKTRANSPORT, false);
-                              startTransport();
-                              }
-                        }
-                  // Initializing instruments every time we start playback.
-                  // External synth can have wrong values, for example
-                  // if we switch between scores
-                  initInstruments(true);
-                  // Need to change state after calling collectEvents()
-                  state = Transport::PLAY;
-                  if (mscore->countIn() && cs->playMode() == PlayMode::SYNTHESIZER) {
-                        countInEvents.clear();
-                        inCountIn = true;
-                        }
-                  emit toGui('1');
-                  }
-            // Got a message from JACK Transport panel: Stop
-            else if (state == Transport::PLAY && driverState == Transport::STOP) {
-                  state = Transport::STOP;
-                  // Muting all notes
-                  stopNotes(-1, true);
-                  initInstruments(true);
-                  if (playPos == eventsEnd) {
-                        if (mscore->loop()) {
-                              qDebug("Seq.cpp - Process - Loop whole score. playPos = %d, cs->pos() = %d", playPos->first, cs->pos().ticks());
-                              emit toGui('4');
-                              return;
-                              }
-                        else {
-                              emit toGui('2');
-                              }
-                        }
-                  else {
-                     emit toGui('0');
-                     }
-                  }
-            else if (state != driverState)
-                  qDebug("Seq: state transition %d -> %d ?",
-                     (int)state, (int)driverState);
+                // Switching to fake transport while playing count in
+                // to prevent playing in other applications with our ticks simultaneously
+                if (cachedPrefs.useJackTransport && mscore->countIn()) {
+                    // Stopping real JACK Transport
+                    stopTransport();
+                    // Starting fake transport
+                    useJackTransportSavedFlag = preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT);
+                    preferences.setPreference(PREF_IO_JACK_USEJACKTRANSPORT, false);
+                    startTransport();
+                }
             }
+            // Initializing instruments every time we start playback.
+            // External synth can have wrong values, for example
+            // if we switch between scores
+            initInstruments(true);
+            // Need to change state after calling collectEvents()
+            state = Transport::PLAY;
+            if (mscore->countIn() && cs->playMode() == PlayMode::SYNTHESIZER) {
+                countInEvents.clear();
+                inCountIn = true;
+            }
+            emit toGui('1');
+        }
+        // Got a message from JACK Transport panel: Stop
+        else if (state == Transport::PLAY && driverState == Transport::STOP) {
+            
+            state = Transport::STOP;
+            // Muting all notes
+            stopNotes(-1, true);
+            initInstruments(true);
+            
+            closeNoteEventStream(true);
+            previousPage = nullptr;
+            
+            if (playPos == eventsEnd) {
+                if (mscore->loop()) {
+                    qDebug("Seq.cpp - Process - Loop whole score. playPos = %d, cs->pos() = %d", playPos->first, cs->pos().ticks());
+                    emit toGui('4');
+                    return;
+                }
+                else {
+                    emit toGui('2');
+                }
+            } else {
+                emit toGui('0');
+            }
+        } else if (state != driverState)
+            qDebug("Seq: state transition %d -> %d ?", (int)state, (int)driverState);
+    }
 
-      memset(buffer, 0, sizeof(float) * framesPerPeriod * 2); // assume two channels
-      float* p = buffer;
+    memset(buffer, 0, sizeof(float) * framesPerPeriod * 2); // assume two channels
+    float* p = buffer;
 
-      processMessages();
+    processMessages();
 
-      if (state == Transport::PLAY) {
-            if (!cs)
-                  return;
+    if (state == Transport::PLAY) {
+        if (!cs)
+            return;
 
-            // if currently in count-in, these pointers will reference data in the count-in
-            EventMap::const_iterator* pPlayPos   = &playPos;
-            EventMap::const_iterator  pEventsEnd = eventsEnd;
-            int*                      pPlayFrame = &playFrame;
+        // if currently in count-in, these pointers will reference data in the count-in
+        EventMap::const_iterator* pPlayPos   = &playPos;
+        EventMap::const_iterator  pEventsEnd = eventsEnd;
+        int*                      pPlayFrame = &playFrame;
+        if (inCountIn) {
+            if (countInEvents.size() == 0)
+                addCountInClicks();
+            pEventsEnd = countInEvents.cend();
+            pPlayPos   = &countInPlayPos;
+            pPlayFrame = &countInPlayFrame;
+        }
+
+        //
+        // play events for one segment
+        //
+        unsigned framePos = 0; // frame currently being processed relative to the first frame of this call to Seq::process
+        int periodEndFrame = *pPlayFrame + framesPerPeriod; // the ending frame (relative to start of playback) of the period being processed by this call to Seq::process
+        int scoreEndUTick = cs->repeatList().tick2utick(cs->lastMeasure()->endTick().ticks());
+        QVector<NPlayEvent> recordedEvents;
+        while (*pPlayPos != pEventsEnd) {
+            int playPosUTick = (*pPlayPos)->first;
+            int n; // current frame (relative to start of playback) that is being synthesized
+
             if (inCountIn) {
-                  if (countInEvents.size() == 0)
-                        addCountInClicks();
-                  pEventsEnd = countInEvents.cend();
-                  pPlayPos   = &countInPlayPos;
-                  pPlayFrame = &countInPlayFrame;
-                  }
+                qreal beatsPerSecond = curTempo() * cs->tempomap()->relTempo(); // relTempo needed here to ensure that bps changes as we slide the tempo bar
+                qreal ticksPerSecond = beatsPerSecond * MScore::division;
+                qreal playPosSeconds = playPosUTick / ticksPerSecond;
+                int playPosFrame = playPosSeconds * MScore::sampleRate;
+                if (playPosFrame >= periodEndFrame)
+                break;
+                n = playPosFrame - *pPlayFrame;
+                if (n < 0) {
+                    qDebug("Count-in: playPosUTick %d: n = %d - %d", playPosUTick, playPosFrame, *pPlayFrame);
+                    n = 0;
+                }
+            } else {
+                qreal playPosSeconds = cs->utick2utime(playPosUTick);
+                int playPosFrame = playPosSeconds * MScore::sampleRate;
+                if (playPosFrame >= periodEndFrame)
+                    break;
+                n = playPosFrame - *pPlayFrame;
+                if (n < 0) {
+                    qDebug("%d:  %d - %d", playPosUTick, playPosFrame, *pPlayFrame);
+                    n = 0;
+                }
+                if (mscore->loop()) {
+                    int loopOutUTick = cs->repeatList().tick2utick(cs->loopOutTick().ticks());
+                    if (loopOutUTick < scoreEndUTick) {
+                        qreal framesPerPeriodInTime = static_cast<qreal>(framesPerPeriod) / MScore::sampleRate;
+                        int framesPerPeriodInTicks = cs->utime2utick(framesPerPeriodInTime);
+                        // Also make sure we are inside the loop
+                        if (playPosUTick >= loopOutUTick - 2 * framesPerPeriodInTicks || cs->repeatList().utick2tick(playPosUTick) < cs->loopInTick().ticks()) {
+                            qDebug ("Process: playPosUTick = %d, cs->loopInTick().ticks() = %d, cs->loopOutTick().ticks() = %d, getCurTick() = %d, loopOutUTick = %d, playFrame = %d",
+                            playPosUTick,      cs->loopInTick().ticks(),      cs->loopOutTick().ticks(),      getCurTick(),      loopOutUTick,    *pPlayFrame);
+                            if (cachedPrefs.useJackTransport) {
+                                int loopInUTick = cs->repeatList().tick2utick(cs->loopInTick().ticks());
+                                _driver->seekTransport(loopInUTick);
+                                if (loopInUTick != 0) {
+                                    int seekto = loopInUTick - 2 * cs->utime2utick((qreal)_driver->bufferSize() / MScore::sampleRate);
+                                    seekRT((seekto > 0) ? seekto : 0 );
+                                }
+                            } else {
+                                emit toGui('3'); // calls loopStart()
+                            }
+                            // Exit this function to avoid segmentation fault in Scoreview
+                            return;
+                        }
+                    }
+                }
+            }
+            if (n) {
+                if (cs->playMode() == PlayMode::SYNTHESIZER) {
+                    metronome(n, p, inCountIn);
+                    _synti->process(n, p);
+                    p += n * 2;
+                    *pPlayFrame  += n;
+                    framesRemain -= n;
+                    framePos     += n;
+                } else {
+                    while (n > 0) {
+                        int section;
+                        float** pcm;
+                        long rn = ov_read_float(&vf, &pcm, n, &section);
+                        if (rn == 0)
+                            break;
+                        for (int i = 0; i < rn; ++i) {
+                            *p++ = pcm[0][i];
+                            *p++ = pcm[1][i];
+                        }
+                        *pPlayFrame  += rn;
+                        framesRemain -= rn;
+                        framePos     += rn;
+                        n            -= rn;
+                    }
+                }
+            }
+            const NPlayEvent& event = (*pPlayPos)->second;
+            if(event.type() == ME_NOTEON) {
+                // TODO: Collect the note events and capture screenshot and save them into one dataset
+                recordedEvents.append(NPlayEvent(event));
+            }
+            playEvent(event, framePos);
+            if (event.type() == ME_TICK1) {
+                tickRemain = tickLength;
+                tickVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;
+            }
+            else if (event.type() == ME_TICK2) {
+                tackRemain = tackLength;
+                tackVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;
+            }
+            mutex.lock();
+            ++(*pPlayPos);
+            mutex.unlock();
+        }
+        if (framesRemain) {
+            if (cs->playMode() == PlayMode::SYNTHESIZER) {
+                metronome(framesRemain, p, inCountIn);
+                _synti->process(framesRemain, p);
+                *pPlayFrame += framesRemain;
+            } else {
+                int n = framesRemain;
+                while (n > 0) {
+                    int section;
+                    float** pcm;
+                    long rn = ov_read_float(&vf, &pcm, n, &section);
+                    if (rn == 0)
+                        break;
+                    for (int i = 0; i < rn; ++i) {
+                        *p++ = pcm[0][i];
+                        *p++ = pcm[1][i];
+                    }
+                    *pPlayFrame  += rn;
+                    framesRemain -= rn;
+                    framePos     += rn;
+                    n            -= rn;
+                }
+            }
+        }
+        if (*pPlayPos == pEventsEnd) {
+            if (inCountIn) {
+                inCountIn = false;
+                // Connecting to JACK Transport if MuseScore was temporarily disconnected from it
+                if (useJackTransportSavedFlag) {
+                    // Stopping fake driver
+                    stopTransport();
+                    preferences.setPreference(PREF_IO_JACK_USEJACKTRANSPORT, true);
+                    // Starting the real JACK Transport. All applications play in sync now
+                    startTransport();
+                }
+            } else
+                stopTransport();
+        }
+        if(recordedEvents.size() > 0) {
+            int currentTick = getCurTick();
+            emit cursorMovedOnNoteEvent(currentTick, false);
+            writeNoteEventStream(currentTick, recordedEvents);
+        }
+    } else {
+        // Outside of playback mode
+        while (!liveEventQueue()->empty()) {
+            const NPlayEvent& event = liveEventQueue()->dequeue();
+            if (event.type() == ME_TICK1) {
+                tickRemain = tickLength;
+                tickVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;
+            } else if (event.type() == ME_TICK2) {
+                tackRemain = tackLength;
+                tackVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;
+            }
+        }
+        if (framesRemain) {
+            metronome(framesRemain, p, true);
+            _synti->process(framesRemain, p);
+        }
+    }
+    //
+    // metering / master gain
+    //
+    qreal lv = 0.0f;
+    qreal rv = 0.0f;
+    p = buffer;
+    for (unsigned i = 0; i < framesRemain; ++i) {
+        qreal val = *p;
+        lv = qMax(lv, qAbs(val));
+        p++;
 
-            //
-            // play events for one segment
-            //
-            unsigned framePos = 0; // frame currently being processed relative to the first frame of this call to Seq::process
-            int periodEndFrame = *pPlayFrame + framesPerPeriod; // the ending frame (relative to start of playback) of the period being processed by this call to Seq::process
-            int scoreEndUTick = cs->repeatList().tick2utick(cs->lastMeasure()->endTick().ticks());
-            while (*pPlayPos != pEventsEnd) {
-                  int playPosUTick = (*pPlayPos)->first;
-                  int n; // current frame (relative to start of playback) that is being synthesized
+        val = *p;
+        rv = qMax(rv, qAbs(val));
+        p++;
+    }
+    meterValue[0] = lv;
+    meterValue[1] = rv;
+    if (meterPeakValue[0] < lv) {
+        meterPeakValue[0] = lv;
+        peakTimer[0] = 0;
+    }
+    if (meterPeakValue[1] < rv) {
+        meterPeakValue[1] = rv;
+        peakTimer[1] = 0;
+    }
+}
 
-                  if (inCountIn) {
-                        qreal beatsPerSecond = curTempo() * cs->tempomap()->relTempo(); // relTempo needed here to ensure that bps changes as we slide the tempo bar
-                        qreal ticksPerSecond = beatsPerSecond * MScore::division;
-                        qreal playPosSeconds = playPosUTick / ticksPerSecond;
-                        int playPosFrame = playPosSeconds * MScore::sampleRate;
-                        if (playPosFrame >= periodEndFrame)
-                              break;
-                        n = playPosFrame - *pPlayFrame;
-                        if (n < 0) {
-                              qDebug("Count-in: playPosUTick %d: n = %d - %d", playPosUTick, playPosFrame, *pPlayFrame);
-                              n = 0;
-                              }
-                        }
-                  else {
-                        qreal playPosSeconds = cs->utick2utime(playPosUTick);
-                        int playPosFrame = playPosSeconds * MScore::sampleRate;
-                        if (playPosFrame >= periodEndFrame)
-                              break;
-                        n = playPosFrame - *pPlayFrame;
-                        if (n < 0) {
-                              qDebug("%d:  %d - %d", playPosUTick, playPosFrame, *pPlayFrame);
-                              n = 0;
-                              }
-                        if (mscore->loop()) {
-                              int loopOutUTick = cs->repeatList().tick2utick(cs->loopOutTick().ticks());
-                              if (loopOutUTick < scoreEndUTick) {
-                                    qreal framesPerPeriodInTime = static_cast<qreal>(framesPerPeriod) / MScore::sampleRate;
-                                    int framesPerPeriodInTicks = cs->utime2utick(framesPerPeriodInTime);
-                                    // Also make sure we are inside the loop
-                                    if (playPosUTick >= loopOutUTick - 2 * framesPerPeriodInTicks || cs->repeatList().utick2tick(playPosUTick) < cs->loopInTick().ticks()) {
-                                          qDebug ("Process: playPosUTick = %d, cs->loopInTick().ticks() = %d, cs->loopOutTick().ticks() = %d, getCurTick() = %d, loopOutUTick = %d, playFrame = %d",
-                                                            playPosUTick,      cs->loopInTick().ticks(),      cs->loopOutTick().ticks(),      getCurTick(),      loopOutUTick,    *pPlayFrame);
-                                          if (cachedPrefs.useJackTransport) {
-                                                int loopInUTick = cs->repeatList().tick2utick(cs->loopInTick().ticks());
-                                                _driver->seekTransport(loopInUTick);
-                                                if (loopInUTick != 0) {
-                                                      int seekto = loopInUTick - 2 * cs->utime2utick((qreal)_driver->bufferSize() / MScore::sampleRate);
-                                                      seekRT((seekto > 0) ? seekto : 0 );
-                                                      }
-                                                }
-                                          else {
-                                                emit toGui('3'); // calls loopStart()
-                                                }
-                                          // Exit this function to avoid segmentation fault in Scoreview
-                                          return;
-                                          }
-                                    }
-                              }
-                        }
-                  if (n) {
-                        if (cs->playMode() == PlayMode::SYNTHESIZER) {
-                              metronome(n, p, inCountIn);
-                              _synti->process(n, p);
-                              p += n * 2;
-                              *pPlayFrame  += n;
-                              framesRemain -= n;
-                              framePos     += n;
-                              }
-                        else {
-                              while (n > 0) {
-                                    int section;
-                                    float** pcm;
-                                    long rn = ov_read_float(&vf, &pcm, n, &section);
-                                    if (rn == 0)
-                                          break;
-                                    for (int i = 0; i < rn; ++i) {
-                                          *p++ = pcm[0][i];
-                                          *p++ = pcm[1][i];
-                                          }
-                                    *pPlayFrame  += rn;
-                                    framesRemain -= rn;
-                                    framePos     += rn;
-                                    n            -= rn;
-                                    }
-                              }
-                        }
-                  const NPlayEvent& event = (*pPlayPos)->second;
-                  playEvent(event, framePos);
-                  if (event.type() == ME_TICK1) {
-                        tickRemain = tickLength;
-                        tickVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;
-                        }
-                  else if (event.type() == ME_TICK2) {
-                        tackRemain = tackLength;
-                        tackVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;
-                        }
-                  mutex.lock();
-                  ++(*pPlayPos);
-                  mutex.unlock();
-                  }
-            if (framesRemain) {
-                  if (cs->playMode() == PlayMode::SYNTHESIZER) {
-                        metronome(framesRemain, p, inCountIn);
-                        _synti->process(framesRemain, p);
-                        *pPlayFrame += framesRemain;
-                        }
-                  else {
-                        int n = framesRemain;
-                        while (n > 0) {
-                              int section;
-                              float** pcm;
-                              long rn = ov_read_float(&vf, &pcm, n, &section);
-                              if (rn == 0)
-                                    break;
-                              for (int i = 0; i < rn; ++i) {
-                                    *p++ = pcm[0][i];
-                                    *p++ = pcm[1][i];
-                                    }
-                              *pPlayFrame  += rn;
-                              framesRemain -= rn;
-                              framePos     += rn;
-                              n            -= rn;
-                              }
-                        }
-                  }
-            if (*pPlayPos == pEventsEnd) {
-                  if (inCountIn) {
-                        inCountIn = false;
-                        // Connecting to JACK Transport if MuseScore was temporarily disconnected from it
-                        if (useJackTransportSavedFlag) {
-                              // Stopping fake driver
-                              stopTransport();
-                              preferences.setPreference(PREF_IO_JACK_USEJACKTRANSPORT, true);
-                              // Starting the real JACK Transport. All applications play in sync now
-                              startTransport();
-                              }
-                        }
-                  else
-                        stopTransport();
-                  }
+void MuseScore::seqCursorMovedOnNoteEvent(int currentTick, bool takeInitialPicture) {
+    if(cv) {
+        unsigned int desiredWidth = 500;
+        unsigned int desiredHeight = 500;
+        QRectF cursorRect = cv->cursorRect();
+        if(takeInitialPicture) {
+            Page * firstPage = cv->score()->pages().first();
+            if(firstPage) {
+                QRect matrixRect = cv->pageMatrixRect(firstPage);
+                cursorRect = QRectF(matrixRect.x(), matrixRect.y(), 0, 0); // upper-left corner of the first page
             }
-      else {
-            // Outside of playback mode
-            while (!liveEventQueue()->empty()) {
-                  const NPlayEvent& event = liveEventQueue()->dequeue();
-                  if (event.type() == ME_TICK1) {
-                        tickRemain = tickLength;
-                        tickVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;
-                        }
-                  else if (event.type() == ME_TICK2) {
-                        tackRemain = tackLength;
-                        tackVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;
-                        }
-                  }
-            if (framesRemain) {
-                  metronome(framesRemain, p, true);
-                  _synti->process(framesRemain, p);
-                  }
-            }
-      //
-      // metering / master gain
-      //
-      qreal lv = 0.0f;
-      qreal rv = 0.0f;
-      p = buffer;
-      for (unsigned i = 0; i < framesRemain; ++i) {
-            qreal val = *p;
-            lv = qMax(lv, qAbs(val));
-            p++;
-
-            val = *p;
-            rv = qMax(rv, qAbs(val));
-            p++;
-            }
-      meterValue[0] = lv;
-      meterValue[1] = rv;
-      if (meterPeakValue[0] < lv) {
-            meterPeakValue[0] = lv;
-            peakTimer[0] = 0;
-            }
-      if (meterPeakValue[1] < rv) {
-            meterPeakValue[1] = rv;
-            peakTimer[1] = 0;
-            }
-      }
+        }
+        qreal xDiff = (desiredWidth / 2) - (cursorRect.width() / 2);
+        qreal yDiff = (desiredHeight / 2) - (cursorRect.height() / 2);
+        QRectF rect = cursorRect.adjusted(xDiff * -1, yDiff * -1, xDiff, yDiff);
+        
+        QPixmap pixmap = cv->grab(rect.toRect());
+        
+        QPixmapDatasetTask *task = new QPixmapDatasetTask(pixmap, currentTick, cv->score()->title());
+        datasetThreadPool->start(task);
+    }
+}
 
 //---------------------------------------------------------
 //   initInstruments

@@ -27,6 +27,7 @@
 #include "libmscore/musescoreCore.h"
 #include "libmscore/score.h"
 #include "sessionstatusobserver.h"
+#include "preferences.h"
 
 namespace Ms {
 
@@ -169,6 +170,37 @@ enum class SaveReplacePolicy {
       };
 
 //---------------------------------------------------------
+//   QPixmapDatasetTask
+//---------------------------------------------------------
+
+class QPixmapDatasetTask: public QRunnable {
+    
+    QPixmap _pixmap;
+    int _currentTick;
+    QString _title;
+    QString _dirPath;
+    
+public:
+    QPixmapDatasetTask(const QPixmap& pixmap, int currentTick, const QString& title):
+        _pixmap(pixmap),
+        _currentTick(currentTick),
+        _title(title),
+        _dirPath(preferences.getString(PREF_APP_PATHS_MYDATASETS) + QString("/") + _title + QString("/")) {
+    }
+    
+    void run() override {
+        QString fileName = QStringLiteral("frame-%1.png").arg(_currentTick, 8, 10, QLatin1Char('0'));
+        QString filePath = _dirPath + fileName;
+        bool result = _pixmap.save(filePath);
+        if(result) {
+//            qDebug(">> The captured image for %d have saved into %s", _currentTick, filePath.toStdString().c_str());
+        } else {
+//            qDebug(">> Failed to save the captured image for %d into %s", _currentTick, filePath.toStdString().c_str());
+        }
+    }
+};
+
+//---------------------------------------------------------
 //   MuseScoreApplication (mac only)
 //---------------------------------------------------------
 
@@ -197,7 +229,9 @@ class MuseScoreApplication : public QtSingleApplication {
 
 class MuseScore : public QMainWindow, public MuseScoreCore {
       Q_OBJECT
-
+      
+      QThreadPool* datasetThreadPool;
+      
       QSettings settings;
       ScoreView* cv                        { 0 };
       ScoreTab* ctab                       { 0 };
@@ -540,6 +574,7 @@ class MuseScore : public QMainWindow, public MuseScoreCore {
       void inputMethodVisibleChanged();
       void endSearch();
       void saveScoreDialogFilterSelected(const QString&);
+      void seqCursorMovedOnNoteEvent(int currentTick, bool takeInitialPicture);
 #ifdef OSC
       void oscIntMessage(int);
       void oscVolume(int val);

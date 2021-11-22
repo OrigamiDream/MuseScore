@@ -779,15 +779,41 @@ bool ScoreView::isCursorDistanceReasonable()
 ///     when starting playback
 //---------------------------------------------------------
 
-void ScoreView::moveControlCursorNearCursor()
-      {
-      double curOffset = _cursor->rect().x() - score()->firstMeasure()->pos().x();
-      double length = score()->lastMeasure()->pos().x() - score()->firstMeasure()->pos().x();
-      _timeElapsed = (curOffset / length) * score()->durationWithoutRepeats() * 1000;
-      qreal x = score()->firstMeasure()->pos().x() + (score()->lastMeasure()->pos().x() - score()->firstMeasure()->pos().x()) * (_timeElapsed / (score()->durationWithoutRepeats() * 1000));
-      x -= score()->spatium();
-      _controlCursor->setRect(QRectF(x, _cursor->rect().y(), _cursor->rect().width(), _cursor->rect().height()));
-      }
+void ScoreView::moveControlCursorNearCursor() {
+    double curOffset = _cursor->rect().x() - score()->firstMeasure()->pos().x();
+    double length = score()->lastMeasure()->pos().x() - score()->firstMeasure()->pos().x();
+    _timeElapsed = (curOffset / length) * score()->durationWithoutRepeats() * 1000;
+    qreal x = score()->firstMeasure()->pos().x() + (score()->lastMeasure()->pos().x() - score()->firstMeasure()->pos().x()) * (_timeElapsed / (score()->durationWithoutRepeats() * 1000));
+    x -= score()->spatium();
+    _controlCursor->setRect(QRectF(x, _cursor->rect().y(), _cursor->rect().width(), _cursor->rect().height()));
+}
+
+QRectF ScoreView::cursorRect() {
+    return _matrix.mapRect(_cursor->rect()).toRect().adjusted(-1, -1, 1, 1);
+}
+
+Page* ScoreView::currentPage() {
+    QRectF cursor = cursorRect();
+    qreal midX = cursor.x() + (cursor.width() / 2);
+    qreal midY = cursor.y() + (cursor.width() / 2);
+    
+    for(Page *page : _score->pages()) {
+        QRect pageRect = _matrix.mapRect(page->canvasBoundingRect()).toRect();
+        
+        qreal minX = pageRect.x();
+        qreal minY = pageRect.y();
+        qreal maxX = minX + pageRect.width();
+        qreal maxY = minY + pageRect.height();
+        if(minX < midX && midX < maxX && minY < midY && midY < maxY) {
+            return page;
+        }
+    }
+    return nullptr;
+}
+
+QRect ScoreView::pageMatrixRect(Page* page) {
+    return _matrix.mapRect(page->canvasBoundingRect()).toRect();
+}
 
 //---------------------------------------------------------
 //   moveCursor
@@ -913,13 +939,13 @@ Fraction ScoreView::cursorTick() const
 //   setCursorOn
 //---------------------------------------------------------
 
-void ScoreView::setCursorOn(bool val)
-      {
-      if (_cursor && (_cursor->visible() != val)) {
-            _cursor->setVisible(val);
-            update(_matrix.mapRect(_cursor->rect()).toRect().adjusted(-1,-1,1,1));
-            }
-      }
+void ScoreView::setCursorOn(bool val) {
+    val = false;
+    if (_cursor && (_cursor->visible() != val)) {
+        _cursor->setVisible(val);
+        update(_matrix.mapRect(_cursor->rect()).toRect().adjusted(-1,-1,1,1));
+    }
+}
 
 //---------------------------------------------------------
 //   setLoopCursor
@@ -1564,7 +1590,7 @@ void ScoreView::paint(const QRect& r, QPainter& p)
       if (_score->layoutMode() != LayoutMode::LINE && _score->layoutMode() != LayoutMode::SYSTEM && !r1.isEmpty()) {
             p.setClipRegion(r1);  // only background
             if (_bgPixmap == 0 || _bgPixmap->isNull())
-                  p.fillRect(r, _bgColor);
+                  p.fillRect(r, Qt::black);
             else
                   p.drawTiledPixmap(r, *_bgPixmap, r.topLeft() - QPoint(_matrix.m31(), _matrix.m32()));
             }

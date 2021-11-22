@@ -1201,9 +1201,16 @@ void ScoreView::changeState(ViewState s)
                   break;
             case ViewState::LASSO:
                   break;
-            case ViewState::PLAY:
+            case ViewState::PLAY: {
+                  QDir dir(preferences.getString(PREF_APP_PATHS_MYDATASETS));
+                  QString title = _score->title();
+                  if(!dir.exists(title)) {
+                        dir.mkdir(title);
+                        qDebug("Dataset directory for %s have been created", title.toStdString().c_str());
+                  }
                   seq->start();
                   break;
+                  }
             case ViewState::ENTRY_PLAY:
                   break;
             case ViewState::FOTO_LASSO:

@@ -380,7 +380,11 @@ class ScoreView : public QWidget, public MuseScoreView {
       ~ScoreView();
 
       QPixmap* fgPixmap() { return _fgPixmap; }
-
+      
+      QRectF cursorRect();
+      Page* currentPage();
+      QRect pageMatrixRect(Page* page);
+    
       void startEdit(Element*, Grip) override;
       void startEditMode(Element*);
 

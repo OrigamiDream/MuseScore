@@ -25,6 +25,7 @@
 #include "libmscore/fraction.h"
 #include "libmscore/fifo.h"
 #include "libmscore/tempo.h"
+#include "libmscore/page.h"
 
 #include "audio/midi/event.h"
 #include "audio/drivers/driver.h"
@@ -107,6 +108,12 @@ class Seq : public QObject, public Sequencer {
       Q_OBJECT
 
       mutable QMutex mutex;
+    
+      mutable QMutex noteEventMutex;
+      QFile * noteEventsFile = nullptr;
+      QTextStream * noteEventsFileStream = nullptr;
+      Page * previousPage = nullptr;
+      QRectF previousCursorRect;
 
       MasterScore* cs;
       ScoreView* cv;
@@ -229,6 +236,7 @@ class Seq : public QObject, public Sequencer {
       void heartBeat(int, int, int);
       void tempoChanged();
       void timeSigChanged();
+      void cursorMovedOnNoteEvent(int currentTick, bool takeInitialPicture);
 
    public:
       Seq();
@@ -241,6 +249,10 @@ class Seq : public QObject, public Sequencer {
       void nextChord();
       void prevMeasure();
       void prevChord();
+    
+      void writeNoteEventStream(int currentTick, const QVector<NPlayEvent>& recordedEvents);
+      void openNoteEventStream();
+      void closeNoteEventStream(bool endOfMeasure = false);
 
       void collectEvents(int utick);
       void ensureBufferAsync(int utick);

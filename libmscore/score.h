@@ -793,13 +793,13 @@ class Score : public QObject, public ScoreElement {
       void sortStaves(QList<int>& dst);
       void mapExcerptTracks(QList<int>& l);
 
-      bool showInvisible() const       { return _showInvisible; }
-      bool showUnprintable() const     { return _showUnprintable; }
-      bool showFrames() const          { return _showFrames; }
+      bool showInvisible() const       { /*return _showInvisible;*/ return false; }
+      bool showUnprintable() const     { /*return _showUnprintable;*/ return false; }
+      bool showFrames() const          { /*return _showFrames;*/ return false; }
       bool showPageborders() const     { return _showPageborders; }
       bool markIrregularMeasures() const { return _markIrregularMeasures; }
       bool showInstrumentNames() const { return _showInstrumentNames; }
-      bool showVBox() const            { return _showVBox; }
+      bool showVBox() const            { /*return _showVBox;*/ return false; }
       void setShowInvisible(bool v);
       void setShowUnprintable(bool v);
       void setShowFrames(bool v);
