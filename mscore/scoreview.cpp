@@ -1590,7 +1590,7 @@ void ScoreView::paint(const QRect& r, QPainter& p)
       if (_score->layoutMode() != LayoutMode::LINE && _score->layoutMode() != LayoutMode::SYSTEM && !r1.isEmpty()) {
             p.setClipRegion(r1);  // only background
             if (_bgPixmap == 0 || _bgPixmap->isNull())
-                  p.fillRect(r, Qt::black);
+                  p.fillRect(r, Qt::white);  // white, same as the score background color for the color inversion
             else
                   p.drawTiledPixmap(r, *_bgPixmap, r.topLeft() - QPoint(_matrix.m31(), _matrix.m32()));
             }
